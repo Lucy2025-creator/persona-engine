@@ -1,0 +1,14 @@
+# Runtime state (auto-generated)
+.persona-engine/
+tests/smoke_home/
+tests/ctx_home/
+tests/v2_home/
+tests/*.jsonl
+tests/*_out*.txt
+tests/*_err*.txt
+tests/repro*.ps1
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
