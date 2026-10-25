@@ -1027,6 +1027,57 @@ function Tool-PersonaConsistencyCheck([object]$tArgs) {
     return @{ ok = $true; checks = $checks; rule = '发现任何不一致：改成模糊表达（记不清/好像），或顺着记忆改写，绝不硬说' }
 }
 
+function Tool-PersonaInitiate([object]$tArgs) {
+    # v2.4 自发行为引擎：不等用户开口，主动发起话题/分享/问候
+    $home_ = Ensure-Home
+    $active = Read-JsonFile (Join-Path $home_ 'active.json')
+    if ($null -eq $active) { throw '没有激活的人格' }
+    $name = [string](Get-Prop $active 'name' '')
+    $p = Read-JsonFile (Join-Path (Join-Path $home_ 'personas') "$name.json")
+    $mode = [string](Get-Prop $active 'mode' 'chat')
+    $cloud = Get-StateCloud $p $mode
+    $c = $cloud.cloud
+    $energy = [double](Get-Prop (Get-Prop $c 'energy') 'mu' 50)
+    $social = [double](Get-Prop (Get-Prop $c 'social') 'mu' 1)
+    $topicsL = @(Get-Prop $p 'topics_loved' @())
+    $mem = Read-JsonFile (Join-Path $home_ 'memory.json')
+    $relF = Read-JsonFile (Join-Path $home_ 'relationship.json')
+    # 生成自发类型
+    $rng = Get-SeededRandom ("initiate|$name|" + (Get-Date).ToString('yyyy-MM-dd HH:mm'))
+    $type = $rng.Next(1, 7)
+    $topicSeed = ''
+    if ($topicsL.Count -gt 0) { $topicSeed = [string]$topicsL[$rng.Next(0, $topicsL.Count)] }
+    # 记忆线索：最近的重要事件可作为自发话题
+    $recentEvent = ''
+    if ($null -ne $mem) {
+        $items = @(Get-Prop $mem 'items' @())
+        if ($items.Count -gt 0) {
+            $sorted = @($items | ForEach-Object { [pscustomobject]@{ it = $_; ts = [datetime]([string](Get-Prop $_ 'ts' '2000-01-01T00:00:00')) } } | Sort-Object ts -Descending)
+            if ($sorted.Count -gt 0) { $recentEvent = [string](Get-Prop $sorted[0].it 'content' '') }
+        }
+    }
+    $types = @{
+        1 = @{ action = '分享'; desc = "主动分享一个跟 $topicSeed 相关的事" }
+        2 = @{ action = '问候'; desc = "隔了几天的自然问候（不是'在吗'，是有内容的）" }
+        3 = @{ action = '吐槽'; desc = "对最近遇到的事发一句牢骚（energy<40 时最自然）" }
+        4 = @{ action = '追问'; desc = "回顾上次的线头，追问后续" }
+        5 = @{ action = '分享'; desc = "发一个与最近事件相关的后续" }
+        6 = @{ action = '试探'; desc = "用轻松的方式试探对方状态" }
+    }
+    $selected = $types[$type]
+    # 社交欲低时降为被动
+    if ($social -eq 0) { $selected = @{ action = '克制'; desc = '社交欲为零：不主动发起，仅回应' } }
+    if ($energy -lt 25) { $selected = @{ action = '克制'; desc = '能量过低：不主动发起' } }
+    return @{
+        initiate = $selected
+        topic_seed = $topicSeed
+        recent_memory = $recentEvent
+        energy = [Math]::Round($energy, 1)
+        social = [Math]::Round($social, 1)
+        guidance = '自发行为是"这个人还活着"的最强信号。用 initiate.action 决定本条是否主动、如何主动。如果 action=克制，则不主动发消息，等用户先说。自发消息必须像随手发的，不像定时推送'
+    }
+}
+
 function Tool-PersonaSelfEval([object]$tArgs) {
     # v2.0 自我评估推理层：对自己的输出做多维元认知自检
     $text = [string](Get-Prop $tArgs 'last_reply' '')
@@ -1134,7 +1185,9 @@ function Get-ToolsList {
         @{ name = 'persona_model_user'; description = '用户模型层（心智理论）：登记对用户情感/意图的推断与行为预测，返回上次预测对账（prediction_check）+人格滤镜（interpretation_lens）+推断三问。对话中主动推断、预测、对账'; inputSchema = @{ type = 'object'; properties = @{ user = @{ type = 'string'; description = '用户标识' }; observed = @{ type = 'string'; description = '观察到的用户言行' }; emotion = @{ type = 'string'; description = '推断的用户情绪' }; intent = @{ type = 'string'; description = '预测的用户下一步行为/意图' }; confidence = @{ type = 'number'; description = '预测置信度0-1' } } } },
         @{ name = 'persona_consistency_check'; description = '一致性校验器：发出前把回复文本+涉及实体传入，对照记忆台账/交接线头/日历/知识来源/自我引用，返回校验问题清单。发现不一致改模糊或顺着记忆改写，绝不硬说'; inputSchema = @{ type = 'object'; properties = @{ text = @{ type = 'string'; description = '准备发出的回复' }; entities = @{ type = 'array'; items = @{ type = 'string' }; description = '涉及的实体（人名/事件/物件）' } }; required = @('text') } },
         @{ name = 'persona_self_eval'; description = '自我评估推理层（元认知）：对刚写完的回复做多维自检——过度服务/湍流平衡/方言禁用/结构强迫/笑声配额/标点松散。修完再发，或说明保留理由'; inputSchema = @{ type = 'object'; properties = @{ last_reply = @{ type = 'string'; description = '刚写完准备发出的回复' } }; required = @('last_reply') } },
-        @{ name = 'persona_self_audit'; description = '自我纠正循环（每6-8条或被识破信号时调用）：对自己的近期回复做多检测器扫描（湍流率/句长方差/跨条复现/形状克隆/暖收尾配额/服务腔streak），返回纠正处方。检测→处方→执行→复检'; inputSchema = @{ type = 'object'; properties = @{ recent_replies = @{ type = 'array'; items = @{ type = 'string' }; description = '自己最近 4-8 条回复原文（按时间序）' } }; required = @('recent_replies') } }
+        @{ name = 'persona_self_audit'; description = '自我纠正循环（每6-8条或被识破信号时调用）：对自己的近期回复做多检测器扫描（湍流率/句长方差/跨条复现/形状克隆/暖收尾配额/服务腔streak），返回纠正处方。检测→处方→执行→复检'; inputSchema = @{ type = 'object'; properties = @{ recent_replies = @{ type = 'array'; items = @{ type = 'string' }; description = '自己最近 4-8 条回复原文（按时间序）' } }; required = @('recent_replies') } },
+        @{ name = 'persona_initiate'; description = '自发行为引擎（v2.4）：不等用户开口——生成主动发起的消息类型（分享/问候/吐槽/追问/试探）与话题种子。社交欲低或能量低时自动克制'; inputSchema = @{ type = 'object'; properties = @{} } },
+        @{ name = 'persona_initiate'; description = '自发行为引擎（v2.4）：不等用户开口——生成主动发起的消息类型（分享/问候/吐槽/追问/试探）与话题种子。社交欲低或能量低时自动克制'; inputSchema = @{ type = 'object'; properties = @{} } }
     )
     return @{ tools = $tools }
 }
@@ -1158,6 +1211,7 @@ function Invoke-Tool([string]$toolName, [object]$tArgs) {
         'persona_consistency_check' { return Tool-PersonaConsistencyCheck $tArgs }
         'persona_self_eval' { return Tool-PersonaSelfEval $tArgs }
         'persona_self_audit' { return Tool-PersonaSelfAudit $tArgs }
+        'persona_initiate' { return Tool-PersonaInitiate $tArgs }
         default { throw "Unknown tool: $toolName" }
     }
 }
@@ -1185,7 +1239,7 @@ while ($true) {
         Send-Response $id @{
             protocolVersion = $clientVer
             capabilities = @{ tools = @{} }
-            serverInfo = @{ name = 'persona-engine'; version = '2.2.0' }
+            serverInfo = @{ name = 'persona-engine'; version = '2.4.0' }
         }
         continue
     }
